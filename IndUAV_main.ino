@@ -89,21 +89,8 @@ const unsigned long update_interval_ms = 40; //frequency at which controller run
 uint16_t last_servo_raw[5] = {0};
 float last_rc_override[5] = {0.0f};
 //--frequency analysis
-unsigned long begin_loop;
-unsigned long last_update;
-unsigned long interval;
-float average_frequency;
-unsigned long max_value = 0;
-unsigned long min_value = 1000000;
-unsigned long total_sum = 0;
-int i = 1;
-//--flags frequency analysis
-bool flag_pix_read = true; // Flag to indicate if Pixhawk data was read
-bool flag_pix_send = true; // Flag to indicate if Pixhawk data was sent
-bool flag_pix_send_servo = true;
-bool flag_pix_read_attquat = true;
-bool flag_pix_read_att = false; 
-bool flag_pix_read_odom = false;
+unsigned long last_update = 0;
+
 
 
 
@@ -166,6 +153,7 @@ void loop() {
 
   // 3. Run control loop at fixed rate
   if (millis() - last_update >= update_interval_ms) {
+      last_update = millis();
 
       //float t = millis() / 1000.0f;  // time in seconds for dynamic attitude reference
       float roll_cmd = 0.0f; //* sin(2 * M_PI * 0.2f * t);   // 0.2 rad amplitude at 0.2 Hz
@@ -174,9 +162,8 @@ void loop() {
       controller.setAttitudeReference(roll_cmd, pitch_cmd, roll_rad, v_body[0]);
       controller.update(Eigen::Vector3f::Zero(), q_meas, omega_meas, v_body, u_sw_sym, last_u_ele, last_u_rud);
           
-      Eigen::VectorXf actuators = controller.getActuatorOutputs();
-      // Serial.println("3. Actuator outputs computed");
-      Serial.println("🚀 Actuator Outputs:");
+      actuators = controller.getActuatorOutputs();
+      Serial.println("Actuator Outputs:");
       for (int i = 0; i < actuators.size(); ++i) {
         Serial.printf("  u[%d] = %.3f\n", i, actuators[i]);
       }
@@ -205,7 +192,6 @@ void loop() {
       // 4. Send RC override to Pixhawk
       send_MAVLink_SERVO(actuators);
       // 5. Debugging output to laptop (optional)
-      // laptop_debug(actuators);
       // laptop_debug(actuators);
       // laptop_debug_QGC();
 
@@ -355,12 +341,9 @@ void send_MoCAP_to_Pixhawk(const float* data) {
   );
 
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-  int bytes_written = Serial1.write(buf, len);
-  if (bytes_written == len){flag_pix_send = true;}
-  else {flag_pix_send = false;}
   // Serial.println("→ MAVLink VISION_POSITION_ESTIMATE sent");
   // Debug printi
-  // Serial.println("📡 Sending MoCap → Pixhawk:");
+  // Serial.println(" Sending MoCap → Pixhawk:");
   // Serial.printf("  Position -probably- in NED (x, y, z): [%.3f, %.3f, %.3f]\n", posX, posY, posZ);
   // Serial.printf("  Quaternion (x, y, z, w): [%.4f, %.4f, %.4f, %.4f]\n", qx, qy, qz, qw);ii
   // Serial.printf("  RPY (rad): roll=%.3f, pitch=%.3f, yaw=%.3f\n", roll, pitch, yaw);
@@ -369,57 +352,33 @@ void send_MoCAP_to_Pixhawk(const float* data) {
 
 
 void read_Pixhawk() {
-  mavlink_status_t status;
+  /*  Read MAVLink messages from Pixhawk over Serial1 (UART). Generatethe full state of the drone usedby the controller:
+  - Attitude quaternion 
+  - Attitude in RPY angles (roll, pitch, yaw)
+  - Angular velocity (rollspeed, pitchspeed, yawspeed)
+  - Position (x, y, z)
+  - Velocity in body frame (v_body)
+  */
 
+  mavlink_status_t status;
   while (Serial1.available() > 0) {
     uint8_t c = Serial1.read();
-
     if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-      // Successfully parsed a full MAVLink message
 
       if (msg.msgid == MAVLINK_MSG_ID_ATTITUDE_QUATERNION) {
-        // mavlink_attitude_quaternion_t att_q;
         mavlink_msg_attitude_quaternion_decode(&msg, &att_q);
-
         q_meas = Eigen::Quaternionf(att_q.q1, att_q.q2, att_q.q3, att_q.q4);
         omega_meas = Eigen::Vector3f(att_q.rollspeed, att_q.pitchspeed, att_q.yawspeed);
-
-        Serial.println("📡 ATTITUDE_QUATERNION:");
-        Serial.printf("Orientation (q): [%.4f, %.4f, %.4f, %.4f]\n",
-                      att_q.q1, att_q.q2, att_q.q3, att_q.q4);
-        Serial.printf("Angular Vel (rad/s): roll=%.2f, pitch=%.2f, yaw=%.2f\n",
-                      att_q.rollspeed, att_q.pitchspeed, att_q.yawspeed);
       }
 
       else if (msg.msgid == MAVLINK_MSG_ID_ATTITUDE) {
         mavlink_attitude_t att;
         mavlink_msg_attitude_decode(&msg, &att);
-      
         roll_rad = att.roll;
         pitch_rad = att.pitch;
         yaw_rad = att.yaw;
-      
-        // Serial.println("📡 ATTITUDE (Euler angles):");
-        // Serial.printf("Roll: %.2f rad | Pitch: %.2f rad | Yaw: %.2f rad\n",
-        //               roll_rad, pitch_rad, yaw_rad);
-      
+    
       }
-
-      // else if (msg.msgid == MAVLINK_MSG_ID_LOCAL_POSITION_NED) {
-      //   mavlink_local_position_ned_t pos;
-      //   mavlink_msg_local_position_ned_decode(&msg, &pos);
-
-      //   ekf_pos[0] = pos.x;
-      //   ekf_pos[1] = pos.y;
-      //   ekf_pos[2] = pos.z;
-      //   Eigen::Vector3f v_ned(pos.vx, pos.vy, pos.vz);
-      //   Eigen::Matrix3f R = q_meas.toRotationMatrix();
-      //   v_body = R.transpose() * v_ned;
-
-      //   // Serial.println("📡 LOCAL_POSITION_NED:");
-      //   // // Serial.printf("Velocity NED: (%.2f, %.2f, %.2f)\n", pos.vx, pos.vy, pos.vz);
-      //   // Serial.printf("Velocity BODY: (%.2f, %.2f, %.2f)\n", v_body[0], v_body[1], v_body[2]);
-      // }
 
       else if (msg.msgid == MAVLINK_MSG_ID_ODOMETRY) {
         mavlink_odometry_t odom;
@@ -431,18 +390,11 @@ void read_Pixhawk() {
         ekf_pos[1] = odom.y;
         ekf_pos[2] = odom.z;
     
-        //Orientation update (if you trust ODOMETRY more than ATTITUDE_QUATERNION)
+        //Orientation update (if you trust ODOMETRY more than ATTITUDE_QUATERNION, uncomment the following)
         // q_meas = Eigen::Quaternionf(odom.q[0], odom.q[1], odom.q[2], odom.q[3]);
     
         Eigen::Matrix3f R = q_meas.toRotationMatrix();  // world-to-body
-        v_body = R.transpose() * v_ned;
-
-        flag_pix_read_odom = true;
-        flag_pix_read_attquat = false;
-        flag_pix_read_att = false;
-    
-        // (Optional debug)
-        // Serial.printf("ODOM v_body = [%.2f, %.2f, %.2f]\n", v_body[0], v_body[1], v_body[2]);
+        v_body = R.transpose() * v_ned;    
       }
     
 
@@ -472,7 +424,7 @@ void read_Pixhawk() {
         // Serial.printf("CH4=%d ", servo.servo4_raw);
         // Serial.printf("CH5=%d\n", servo.servo5_raw);
 
-        // Serial.println("📡 SERVO_OUTPUT_RAW:");
+        // Serial.println("SERVO_OUTPUT_RAW:");
         // Serial.printf("Elevator (CH4): %.2f | Rudder (CH5): %.2f\n",
         //               last_u_ele, last_u_rud);
     }
@@ -480,38 +432,7 @@ void read_Pixhawk() {
 }
 
 
-
-// void send_MAVLink_SERVO(const Eigen::VectorXf& actuators) {
-//   uint16_t rc_override[18] = {0};  // PX4 expects up to 18 channels
-
-//   auto mapToPWM = [](float cmd) -> uint16_t {
-//     float pwm = 1500.0f + cmd * 500.0f;  // center at 1500, ±500 range
-//     pwm = clamp(pwm, 1000.0f, 2000.0f);
-//     return static_cast<uint16_t>(pwm);
-//   };
-
-//   for (int i = 0; i < 5 && i < actuators.size(); ++i) {
-//     rc_override[i] = mapToPWM(actuators[i]);
-//   }
-
-//   mavlink_message_t servo_msg;
-//   mavlink_msg_rc_channels_override_pack(
-//     2, 42, &servo_msg,
-//     1, 1,  // target system, component
-//     rc_override[0], rc_override[1], rc_override[2], rc_override[3],
-//     rc_override[4], rc_override[5], rc_override[6], rc_override[7],
-//     rc_override[8], rc_override[9], rc_override[10], rc_override[11],
-//     rc_override[12], rc_override[13], rc_override[14], rc_override[15],
-//     rc_override[16], rc_override[17]
-//   );
-
-//   uint8_t temp_buf[MAVLINK_MAX_PACKET_LEN];
-//   uint16_t len = mavlink_msg_to_send_buffer(temp_buf, &servo_msg);
-//   Serial1.write(temp_buf, len);
-// }
-
-
-void send_MAVLink_SERVO(const Eigen::VectorXf& actuators) {
+void send_MAVLink_SERVO(Eigen::VectorXf& actuators) {
   uint16_t rc_override[18] = {0};
 
   auto mapToPWM = [](float cmd) -> uint16_t {
@@ -520,17 +441,24 @@ void send_MAVLink_SERVO(const Eigen::VectorXf& actuators) {
     return static_cast<uint16_t>(pwm);
   };
 
-  // actuators[1] = -actuators[1]; 
   for (int i = 0; i < 5 && i < actuators.size(); ++i) {
     if (i==1) {  // left sweep inversion 
       rc_override[i] = mapToPWM(-actuators[i]);
     } else {
       rc_override[i] = mapToPWM(actuators[i]);
     }
-    // rc_override[i] = mapToPWM(actuators[i]);
-    last_rc_override[i] = actuators[i];  // Store the raw [-1,1] value
+    last_rc_override[i] = actuators[i];  // Store the raw [-1,1] value for debug
   }
-
+  // Serial.printf("RC_CHANNELS_OVERRIDE sent: ");
+  // for (int i = 0; i < 5; ++i) {
+  //   Serial.printf("%.2f ", last_rc_override[i]);
+  // }
+  // Serial.println();
+  Serial.printf("SERVO raw values sent: ");
+  for (int i = 0; i < 5; ++i) {
+    Serial.printf("%f", actuators[i]);
+  }
+  Serial.println();
 
   mavlink_message_t servo_msg;
   mavlink_msg_rc_channels_override_pack(
@@ -545,15 +473,7 @@ void send_MAVLink_SERVO(const Eigen::VectorXf& actuators) {
 
   uint8_t temp_buf[MAVLINK_MAX_PACKET_LEN];
   uint16_t len = mavlink_msg_to_send_buffer(temp_buf, &servo_msg);
-  int bytes_written = Serial1.write(temp_buf, len);
-
-
-  if (bytes_written == len){
-    flag_pix_send_servo = true;}
-
-  else {
-    flag_pix_send_servo = false;
-  }
+  Serial1.write(temp_buf, len);
 }
 
 
