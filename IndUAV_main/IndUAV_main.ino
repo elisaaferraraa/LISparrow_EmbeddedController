@@ -37,16 +37,14 @@
 // ====== WiFi Configuration ======
 const char* ssid = "WiFli"; //"WIsa-Fi";
 const char* password = "crazyflie";//"87654321";
+uint8_t bssid[6] = { 0xE0, 0x63, 0xDA, 0xAE, 0x13, 0x66 };
+int channel  = 36;
 WiFiUDP Udp;
 unsigned int localPort = 8888;
 
-const char* laptopIP = "192.168.194.243"; //"192.168.194.114"; my with WiFli //"192.168.209.213" my with WisaFi;  // <-- Your laptop IP on same network as ESP32
+const char* laptopIP = "192.168.194.114"; // <-- Your laptop IP on same network as ESP32
 const int laptopPort = 9999;          // <-- Choose an unused UDP port for feedback
 WiFiUDP laptopUdp;
-
-const char* ElisalaptopIP = "192.168.194.114";
-const int ElisalaptopPort = 7777;          // <-- Choose an unused UDP port for feedback
-WiFiUDP ElisalaptopUdp;
 
 const int QGCport = 14550;          // <-- Choose an unused UDP port for feedback
 WiFiUDP QGC;
@@ -98,24 +96,16 @@ unsigned long last_update = 0;
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);  // Initialize LED pin as output
-  WiFi.setSleep(WIFI_PS_NONE);
   Serial.begin(115200);
-
   digitalWrite(LED_BUILTIN, HIGH);  // LED OFF before WiFi is connected
-  //  WIFI SETUP
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
-  Serial.println("\nWiFi connected");
+  
+  WiFi.setSleep(WIFI_PS_NONE); //full battery
+  initWiFi(); 
 
   // UDP CONNECTIONS SETUP
-  Udp.begin(localPort); // for reading MoCap
+  Udp.begin(localPort); // for reading MoCap and arm command
   laptopUdp.begin(laptopPort); //for sending to laptop specific info
-  QGC.begin(QGCport); //for connecting to 
-  ElisalaptopUdp.begin(ElisalaptopPort); //for sending to laptop specific info
+  QGC.begin(QGCport); //for connecting to QGC
   Serial.println("UDP listening...");
 
   // UART CONNECTION SETUP
@@ -145,6 +135,7 @@ void setup() {
 // --------- Main Loop -------------
 
 void loop() {
+  if (WiFi.status() != WL_CONNECTED){WiFireconnect();}
   // 0. ARMING (you can send it through UDP now)
   // if (!is_armed){
   // armingSequence();}
@@ -175,15 +166,68 @@ void loop() {
       controller.update(Eigen::Vector3f::Zero(), q_meas, omega_meas, v_body, u_sw_sym, last_u_ele, last_u_rud);
       actuators = controller.getActuatorOutputs();
     }
-      // 4. Send RC override to Pixhawk
-      send_MAVLink_SERVO(actuators);
-      // 5. Debugging output to laptop (optional)
-      // laptop_debug(actuators);
-      // laptop_debug_QGC();
+  // 4. Send RC override to Pixhawk
+  send_MAVLink_SERVO(actuators);
+  // 5. Debugging output to laptop (optional)
+  // laptop_debug(actuators);
+  laptop_debug_QGC();
 
 }
 
 // --------functions called in loop-----------------
+void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info) {
+
+  switch (event) {
+  
+  case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+  
+    Serial.println("");
+    Serial.println("Station connected");
+    break;
+  
+  case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+  
+    Serial.println("");
+    Serial.println("Got IP address: ");
+    Serial.println(WiFi.localIP());
+    break;
+  
+  case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+  
+    Serial.println("");
+    Serial.println("Disconnected from station, attempting reconnection");
+    WiFi.reconnect();
+    break;
+  
+  default:
+    break;
+  
+  }}
+
+void initWiFi(){
+  //  WIFI SETUP
+  //if wifi connection does not work try to shortcut the RST button (i.e. press it) to reset the ESP32
+  WiFi.mode(WIFI_STA); // Set WiFi mode to Station (client)
+  WiFi.disconnect(); 
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    Serial.println(WiFi.status());
+    delay(500);
+  }
+  digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
+  Serial.println("\nWiFi connected");
+}
+
+void WiFireconnect(){
+  // if WiFi is down, try reconnecting 
+  while ((WiFi.status() != WL_CONNECTED) ) {
+    Serial.println(".");
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
+    delay(30000); // 30 seconds before retrying
+  }
+}
 void armingSequence() {
   //[ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
   mavlink_message_t msg;
@@ -356,16 +400,7 @@ void send_MAVLink_SERVO(Eigen::VectorXf& actuators) {
     }
     last_rc_override[i] = actuators[i];  // Store the raw [-1,1] value for debug
   }
-  // Serial.printf("RC_CHANNELS_OVERRIDE sent: ");
-  // for (int i = 0; i < 5; ++i) {
-  //   Serial.printf("%.2f ", last_rc_override[i]);
-  // }
-  // Serial.println();
-  // Serial.printf("SERVO raw values sent: ");
-  // for (int i = 0; i < 5; ++i) {
-  //   Serial.printf("%f", actuators[i]);
-  // }
-  // Serial.println();
+
 
   mavlink_message_t servo_msg;
   mavlink_msg_rc_channels_override_pack(
@@ -385,9 +420,7 @@ void send_MAVLink_SERVO(Eigen::VectorXf& actuators) {
 
 
 
-
-
-
+// Not used in this implementation. 
 void laptop_debug(const Eigen::VectorXf& actuators) {
   // Build packet: [roll, pitch, yaw, p, q, r, x, y, z, vx, vy, vz, u0, u1, u2, u3, u4]
   float packet[18] = {
@@ -415,60 +448,90 @@ void laptop_debug(const Eigen::VectorXf& actuators) {
     0.0f  // Padding or future use
   };
 
-  // Send 18 floats = 72 bytes
-  ElisalaptopUdp.beginPacket(ElisalaptopIP, ElisalaptopPort);
-  ElisalaptopUdp.write((uint8_t*)packet, sizeof(packet));
-  ElisalaptopUdp.endPacket();
 }
 
-// void laptop_debug_QGC() {
-//   // 1) pack into 'msg' — note the extra nullptr at the end
-//   mavlink_msg_attitude_quaternion_pack(
-//       /* system_id */      1,
-//       /* component_id */   MAV_COMP_ID_ONBOARD_COMPUTER,
-//       /* message out */    &msg,
-//       /* time_boot_ms */   micros()/1000,
-//       /* quaternion */     att_q.q1, att_q.q2, att_q.q3, att_q.q4,
-//       /* rates */          att_q.rollspeed, att_q.pitchspeed, att_q.yawspeed,
-//       /* extra fields */   nullptr
-//   );
+void send_quaternion_to_QGC() {
+  uint32_t t_ms = (uint32_t)(micros() / 1000);
+  float thrust_val = 0.0f;  // if you don’t have thrust data
 
-//   // 2) serialize
-//   uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-//   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-
-//   // 3) send
-//   QGC.beginPacket(laptopIP, QGCport);
-//   QGC.write(buf, len);
-//   QGC.endPacket();
-// }
-
-void laptop_debug_QGC() {
-  // 1) Send attitude_quaternion (already present)
   mavlink_msg_attitude_quaternion_pack(
-      1, MAV_COMP_ID_ONBOARD_COMPUTER, &msg,
-      micros()/1000,
-      att_q.q1, att_q.q2, att_q.q3, att_q.q4,
-      att_q.rollspeed, att_q.pitchspeed, att_q.yawspeed,
-      nullptr
+    /*sysid*/        1,
+    /*compid*/       MAV_COMP_ID_ONBOARD_COMPUTER,
+    /*msg*/          &msg,
+    /*time_boot_ms*/ t_ms,
+    /*q1..q4*/       att_q.q1, att_q.q2, att_q.q3, att_q.q4,
+    /*rates*/        att_q.rollspeed, att_q.pitchspeed, att_q.yawspeed,
+    /*thrust ptr*/   &thrust_val
   );
+
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
   QGC.beginPacket(laptopIP, QGCport);
   QGC.write(buf, len);
   QGC.endPacket();
+}
 
-  // 2) Send RC override values as a custom float array
-  float rc_debug[5];
-  for (int i = 0; i < 5; ++i)
-    rc_debug[i] = last_rc_override[i];  // values in [-1, 1]
 
+void send_RC_channels_to_QGC(const float *rc_in_f, uint8_t chan_count, uint8_t rssi) {
+  // Build an 8-element uint16_t array
+  uint16_t rc[8] = {0};
+  for (uint8_t i = 0; i < chan_count && i < 8; i++) {
+    rc[i] = (uint16_t)rc_in_f[i];
+  }
+
+  uint32_t now_ms = (uint32_t)(micros() / 1000);
+
+  mavlink_msg_rc_channels_raw_pack(
+    /*sysid*/         1,
+    /*compid*/        MAV_COMP_ID_ONBOARD_COMPUTER,
+    /*msg*/           &msg,
+    /*time_boot_ms*/  now_ms,
+    /*port*/          0,
+    /*chan1*/         rc[0], /*chan2*/ rc[1],
+    /*chan3*/         rc[2], /*chan4*/ rc[3],
+    /*chan5*/         rc[4], /*chan6*/ rc[5],
+    /*chan7*/         rc[6], /*chan8*/ rc[7],
+    /*rssi*/          rssi
+  );
+
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
   QGC.beginPacket(laptopIP, QGCport);
-  QGC.write((uint8_t*)rc_debug, sizeof(rc_debug));
-  QGC.endPacket();
-
-  // 3) Send servo output raw as uint16_t values
-  QGC.beginPacket(ElisalaptopIP, QGCport);
-  QGC.write((uint8_t*)last_servo_raw, sizeof(last_servo_raw));
+  QGC.write(buf, len);
   QGC.endPacket();
 }
 
+
+void send_servo_outputs_to_QGC(const uint16_t *servo_pwm, uint8_t servo_count) {
+  // Build a 16-element uint16_t array
+  uint16_t pwm[16] = {0};
+  for (uint8_t i = 0; i < servo_count && i < 16; i++) {
+    pwm[i] = servo_pwm[i];
+  }
+
+  uint32_t now_us = (uint32_t)micros();
+
+  mavlink_msg_servo_output_raw_pack(
+    /*sysid*/       1,
+    /*compid*/      MAV_COMP_ID_ONBOARD_COMPUTER,
+    /*msg*/         &msg,
+    /*time_usec*/   now_us,
+    /*port*/        0,
+    /*servo1*/      pwm[0],  /*2*/ pwm[1],  /*3*/ pwm[2],  /*4*/ pwm[3],
+    /*5*/           pwm[4],  /*6*/ pwm[5],  /*7*/ pwm[6],  /*8*/ pwm[7],
+    /*9*/           pwm[8],  /*10*/pwm[9],  /*11*/pwm[10], /*12*/pwm[11],
+    /*13*/          pwm[12], /*14*/pwm[13], /*15*/pwm[14], /*16*/pwm[15]
+  );
+
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+  QGC.beginPacket(laptopIP, QGCport);
+  QGC.write(buf, len);
+  QGC.endPacket();
+}
+
+
+void laptop_debug_QGC() {
+  send_quaternion_to_QGC();
+  send_RC_channels_to_QGC(last_rc_override, 5, 0);
+
+  // last_servo_raw must be uint16_t[<=16]
+  send_servo_outputs_to_QGC(last_servo_raw, 6);
+}
