@@ -69,7 +69,8 @@ float mocap_data[7] = {0}; //cancel initial values TODO
 Eigen::VectorXf actuators(5); // TODO remove it
 Eigen::Vector3f ekf_pos(0.0f, 0.0f, 0.0f);
 bool is_armed = false; // Flag to request arming
-bool first_loop = true; // Flag to run the first loop only once
+constexpr int UDP_BUF_LEN = 300; // Maximum UDP packet size we expect (MAVLink max is ~280 bytes)
+uint8_t udpBuf[UDP_BUF_LEN];
 
 // Controller
 AgileCascadedPID controller(0.04f);  // 25 Hz loop
@@ -102,20 +103,20 @@ void setup() {
 
   digitalWrite(LED_BUILTIN, HIGH);  // LED OFF before WiFi is connected
   //  WIFI SETUP
-  // WiFi.begin(ssid, password);
-  // while (WiFi.status() != WL_CONNECTED) {
-  //   delay(500);
-  //   Serial.print(".");
-  // }
-  // digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
-  // Serial.println("\nWiFi connected");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
+  Serial.println("\nWiFi connected");
 
   // UDP CONNECTIONS SETUP
-  // Udp.begin(localPort); // for reading MoCap
-  // laptopUdp.begin(laptopPort); //for sending to laptop specific info
-  // QGC.begin(QGCport); //for connecting to 
-  // ElisalaptopUdp.begin(ElisalaptopPort); //for sending to laptop specific info
-  // Serial.println("UDP listening...");
+  Udp.begin(localPort); // for reading MoCap
+  laptopUdp.begin(laptopPort); //for sending to laptop specific info
+  QGC.begin(QGCport); //for connecting to 
+  ElisalaptopUdp.begin(ElisalaptopPort); //for sending to laptop specific info
+  Serial.println("UDP listening...");
 
   // UART CONNECTION SETUP
   Serial1.begin(BAUD, SERIAL_8N1, RX_PIN, TX_PIN);
@@ -144,13 +145,28 @@ void setup() {
 // --------- Main Loop -------------
 
 void loop() {
-  // 0. ARMING
-  if (!is_armed){
-  armingSequence();}
+  // 0. ARMING (you can send it through UDP now)
+  // if (!is_armed){
+  // armingSequence();}
+
+  // 1) Read any incoming UDP packet (could be MoCap or ARM)
+  int len = readUDPtoBuf();
+  if (len > 0) {
+    // OPTIONAL: peek at mavlink header to decide MoCap vs ARM
+    uint8_t hdr = udpBuf[0];
+    if (hdr == MAVLINK_V2_STX /*0xFD*/ || hdr == MAVLINK_STX /*0xFE*/) { … }
+
+    // 2a) If it’s your ARM command, forward it:
+    send_Arming_to_Pixhawk(udpBuf, len);
+
+    // 2b) If it’s MoCap, you’d still call:
+        send_MoCAP_to_Pixhawk(reinterpret_cast<float*>(udpBuf));
+  }
+
 
   // // 1. Read MoCap over UDP and send to Pixhawk
   // if (read_MoCAP(mocap_data)) {
-  // send_MoCAP_to_Pixhawk(mocap_data);
+  // send_MoCAP_to_Pixhawk(mocap_data);}
 
   // // 2. Always check for incoming MAVLink messages
   read_Pixhawk();
@@ -158,41 +174,13 @@ void loop() {
   // 3. Run control loop at fixed rate
   if (millis() - last_update >= update_interval_ms) {
       last_update = millis();
-
       //float t = millis() / 1000.0f;  // time in seconds for dynamic attitude reference
       float roll_cmd = 0.0f; //* sin(2 * M_PI * 0.2f * t);   // 0.2 rad amplitude at 0.2 Hz
       float pitch_cmd = 0.0f;
-    
       controller.setAttitudeReference(roll_cmd, pitch_cmd, roll_rad, v_body[0]);
       controller.update(Eigen::Vector3f::Zero(), q_meas, omega_meas, v_body, u_sw_sym, last_u_ele, last_u_rud);
-          
       actuators = controller.getActuatorOutputs();
-      // Serial.println("Actuator Outputs:");
-      // for (int i = 0; i < actuators.size(); ++i) {
-      //   Serial.printf("  u[%d] = %.3f\n", i, actuators[i]);
-      // }
     }
-
-      // === RC CHANNEL OVERRIDE TEST ===
-      // Eigen::VectorXf test_cmds(5);  // 5 channels
-
-      // float t = millis() / 1000.0f;
-      // test_cmds << 
-      //     -1.0f,                           // CH1: Thrust (low)
-      //     -0.6f, // CH2: Sweep Left
-      //     -0.3f,  // CH3: Sweep Right 
-      //     0.3f ,                           // CH4: Elevator (centered)
-      //     0.6;                            // CH5: Rudder (right)
-
-      // Send test RC override command
-      // send_MAVLink_SERVO(actuators);
-      // Serial.print("RC Sent: ");
-      // for (int i = 0; i < test_cmds.size(); i++) {
-      //   Serial.printf("%.2f ", test_cmds[i]);
-      // }
-      // Serial.println();
-
-      
       // 4. Send RC override to Pixhawk
       send_MAVLink_SERVO(actuators);
       // 5. Debugging output to laptop (optional)
@@ -216,7 +204,6 @@ void armingSequence() {
         if (nowArmed != is_armed) {
           is_armed = nowArmed;
           Serial.println("Vehicle is now ARMED");
-          digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
         }
         else{ arm();}
       }
@@ -249,23 +236,36 @@ void arm(){
 }
 
 
-bool read_MoCAP(float* data_out) {
+int readUDPtoBuf() {
+  //returns the number of bytes read, or 0 if no packet
   int packetSize = Udp.parsePacket();
-  // Serial.printf("packetSize  mocap:  %f\n", packetSize) ;
-  if (packetSize == 28) {
-    Udp.read((char*)data_out, 28);
-    return true;
+  if (packetSize > 0 && packetSize <= UDP_BUF_LEN) {
+    return Udp.read((char*)udpBuf, packetSize);
   }
-  // Serial.println("\n mocap reading failed");
-  return false;
+  return 0;
 }
+
+void send_Arming_to_Pixhawk(const uint8_t* buf, int len) {
+  // Just mirror the exact MAVLink bytes onto Serial1
+  Serial1.write(buf, len);
+  Serial1.flush();
+  Serial.printf("→ Forwarded ARM packet (%d bytes) to Pixhawk\n", len);
+}
+
+// bool read_MoCAP(float* data_out) {
+//   int packetSize = Udp.parsePacket();
+//   if (packetSize == 28) {
+//     Udp.read((char*)data_out, 28);
+//     return true;
+//   }
+//   return false;
+// }
 
 void send_MoCAP_to_Pixhawk(const float* data) {
   float posX = data[0], posY = data[1], posZ = data[2];
   float qx = data[3], qy = data[4], qz = data[5], qw = data[6];
 
   // Convert quaternion to roll, pitch, yaw  because PX4 expects these angles in VISION_POSITION_ESTIMATE
-
   float roll = atan2(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
   float pitch = asin(2.0f * (qw * qy - qz * qx));
   float yaw = atan2(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz));
@@ -299,6 +299,7 @@ void read_Pixhawk() {
   - Angular velocity (rollspeed, pitchspeed, yawspeed)
   - Position (x, y, z)
   - Velocity in body frame (v_body)
+  - last_u_ele and last_u_rud (elevator and rudder control outputs)
   */
 
   mavlink_status_t status;
@@ -340,34 +341,20 @@ void read_Pixhawk() {
     
 
       // 3. Servo PWM outputs
-      // else if (msg.msgid == MAVLINK_MSG_ID_SERVO_OUTPUT_RAW) {
-      //   mavlink_servo_output_raw_t servo;
-      //   mavlink_msg_servo_output_raw_decode(&msg, &servo);
+      else if (msg.msgid == MAVLINK_MSG_ID_SERVO_OUTPUT_RAW) {
+        mavlink_servo_output_raw_t servo;
+        mavlink_msg_servo_output_raw_decode(&msg, &servo);
 
-      //   // Read channels 1–5 (assuming actuators are on MAIN outputs)
-      //   auto normalize_pwm = [](uint16_t pwm) -> float {
-      //     return clamp((pwm - 1500.0f) / 500.0f, -1.0f, 1.0f);
-      //   };
+        // Read channels 1–5 (assuming actuators are on MAIN outputs)
+        auto normalize_pwm = [](uint16_t pwm) -> float {
+          float v = static_cast<float>(pwm); 
+          return clamp((pwm - 1500.0f) / 500.0f, -1.0f, 1.0f);
+        };
 
-      //   last_u_ele    = normalize_pwm(servo.servo4_raw);  // Channel 4
-      //   last_u_rud    = normalize_pwm(servo.servo5_raw);  // Channel 5
-
-      //   last_servo_raw[0] = servo.servo1_raw;
-      //   last_servo_raw[1] = servo.servo2_raw;
-      //   last_servo_raw[2] = servo.servo3_raw;
-      //   last_servo_raw[3] = servo.servo4_raw;
-      //   last_servo_raw[4] = servo.servo5_raw;
-
-        // Serial.print("SERVO PWM: ");
-        // Serial.printf("CH1=%d ", servo.servo1_raw);
-        // Serial.printf("CH2=%d ", servo.servo2_raw);
-        // Serial.printf("CH3=%d ", servo.servo3_raw);
-        // Serial.printf("CH4=%d ", servo.servo4_raw);
-        // Serial.printf("CH5=%d\n", servo.servo5_raw);
-
-        // Serial.println("SERVO_OUTPUT_RAW:");
-        // Serial.printf("Elevator (CH4): %.2f | Rudder (CH5): %.2f\n",
-        //               last_u_ele, last_u_rud);
+        last_u_ele    = normalize_pwm(servo.servo4_raw);  // Channel 4
+        last_u_rud    = normalize_pwm(servo.servo5_raw);  // Channel 5
+      
+      }
     }
   }
 }
