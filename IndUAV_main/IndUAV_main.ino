@@ -69,6 +69,7 @@ float mocap_data[7] = {0}; //cancel initial values TODO
 Eigen::VectorXf actuators(5); // TODO remove it
 Eigen::Vector3f ekf_pos(0.0f, 0.0f, 0.0f);
 bool is_armed = false; // Flag to request arming
+bool first_loop = true; // Flag to run the first loop only once
 
 // Controller
 AgileCascadedPID controller(0.04f);  // 25 Hz loop
@@ -127,22 +128,77 @@ void setup() {
   // controller.setAttitudeReference(0.2f, 0.0f, 0.0f, 0.0f);
   // controller.setThrustReference(0.0f, 0.0f);               // Half thrust
   start_time = millis();
+
+  // Run one loop before arming
+  read_Pixhawk();
+  float roll_cmd = 0.0f; 
+  float pitch_cmd = 0.0f;
+  controller.setAttitudeReference(roll_cmd, pitch_cmd, roll_rad, v_body[0]);
+  controller.update(Eigen::Vector3f::Zero(), q_meas, omega_meas, v_body, u_sw_sym, last_u_ele, last_u_rud);
+  actuators = controller.getActuatorOutputs();
+  send_MAVLink_SERVO(actuators);
+
+}
+
+void armingSequence() {
+  //[ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
+  mavlink_message_t msg;
+  mavlink_status_t  status;
+  while (Serial1.available()) {
+    uint8_t c = Serial1.read();
+    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+      if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+        mavlink_heartbeat_t hb;
+        mavlink_msg_heartbeat_decode(&msg, &hb);
+        bool nowArmed = (hb.base_mode & MAV_MODE_FLAG_SAFETY_ARMED);
+        if (nowArmed != is_armed) {
+          is_armed = nowArmed;
+          Serial.println("Vehicle is now ARMED");
+          digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
+        }
+        else{ arm();}
+      }
+      Serial1.write(c); // forward raw MAVLink byte onto USB not to get stuck
+    }
+  }
+}
+bool read_arming_status(){
+  /*
+  Read the arming status from the flight controller.
+  The status is accessed by reading the MAVLink heartbeat message (base_mode).
+  [ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
+  */
+  mavlink_message_t arm_msg;
+  mavlink_status_t status;
+  bool armed = false;
+
+  while (Serial1.available() > 0) {
+    uint8_t c = Serial1.read();
+    Serial2.write(c);  // forward raw MAVLink byte onto USB
+    if (mavlink_parse_char(MAVLINK_COMM_0, c, &arm_msg, &status)) {
+      if (arm_msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+        mavlink_heartbeat_t heartbeat;
+        mavlink_msg_heartbeat_decode(&arm_msg, &heartbeat);
+        Serial.println("Heartbeat was read");
+        if (heartbeat.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) {
+          // Vehicle is armed
+          armed = true;
+          Serial.println("Flight controller status was read: vehicle is armed");
+        }
+        Serial.printf("System status value: %u\n", heartbeat.system_status);
+        Serial.printf("Base mode value: %u\n", heartbeat.base_mode);
+      }
+    }
+  }
+  return armed;
 }
 
 // --------- Main Loop -------------
 
 void loop() {
   // 0. ARMING
-  // while (!is_armed) {
-  //   arm();
-  //   delay(1000);
-  //   is_armed = read_arming_status(); 
-  // }
-  // if (is_armed){
-  //   digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
-  //   Serial.println("vehicle armed");
-  // }
-  
+  if (!is_armed){
+  armingSequence();}
 
   // // 1. Read MoCap over UDP and send to Pixhawk
   // if (read_MoCAP(mocap_data)) {
@@ -163,10 +219,10 @@ void loop() {
       controller.update(Eigen::Vector3f::Zero(), q_meas, omega_meas, v_body, u_sw_sym, last_u_ele, last_u_rud);
           
       actuators = controller.getActuatorOutputs();
-      Serial.println("Actuator Outputs:");
-      for (int i = 0; i < actuators.size(); ++i) {
-        Serial.printf("  u[%d] = %.3f\n", i, actuators[i]);
-      }
+      // Serial.println("Actuator Outputs:");
+      // for (int i = 0; i < actuators.size(); ++i) {
+      //   Serial.printf("  u[%d] = %.3f\n", i, actuators[i]);
+      // }
     }
 
       // === RC CHANNEL OVERRIDE TEST ===
@@ -249,37 +305,7 @@ void sendSetModeManual() {
   Serial.println("Sent SET_MODE MANUAL");
 };
 
-bool read_arming_status(){
-  /*
-  Read the arming status from the flight controller.
-  The status is accessed by reading the MAVLink heartbeat message (base_mode).
-  [ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
-  */
-  mavlink_message_t arm_msg;
-  mavlink_status_t status;
-  bool armed = false;
 
-  while (Serial1.available() > 0) {
-    uint8_t c = Serial1.read();
-    // Serial.println("Serial1 has data in it");
-    if (mavlink_parse_char(MAVLINK_COMM_0, c, &arm_msg, &status)) {
-      Serial.printf("Message ID: %u\n", arm_msg.msgid);
-      if (arm_msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-  
-        mavlink_heartbeat_t heartbeat;
-        mavlink_msg_heartbeat_decode(&arm_msg, &heartbeat);
-        Serial.println("Heartbeat was read");
-        if (heartbeat.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) {
-          // Vehicle is armed
-          armed = true;
-          Serial.println("Flight controller status was read: vehicle is armed");
-        }
-      }
-    }
-  }
-  return armed;
-
-}
 
 void arm(){
   mavlink_command_long_t cmd;
@@ -300,7 +326,7 @@ void arm(){
 
   uint16_t len = mavlink_msg_to_send_buffer(buf, &arm_msg);
   Serial1.write(buf, len);
-  Serial.println("ARM command sent from setup()");
+  Serial.println("ARM command sent from arm()");
   delay(1000); // Wait for the command to be processed
 }
 
@@ -454,11 +480,11 @@ void send_MAVLink_SERVO(Eigen::VectorXf& actuators) {
   //   Serial.printf("%.2f ", last_rc_override[i]);
   // }
   // Serial.println();
-  Serial.printf("SERVO raw values sent: ");
-  for (int i = 0; i < 5; ++i) {
-    Serial.printf("%f", actuators[i]);
-  }
-  Serial.println();
+  // Serial.printf("SERVO raw values sent: ");
+  // for (int i = 0; i < 5; ++i) {
+  //   Serial.printf("%f", actuators[i]);
+  // }
+  // Serial.println();
 
   mavlink_message_t servo_msg;
   mavlink_msg_rc_channels_override_pack(

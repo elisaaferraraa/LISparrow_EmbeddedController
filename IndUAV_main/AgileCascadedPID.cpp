@@ -84,7 +84,7 @@ void AgileCascadedPID::update(
     w_dot_ref += feedforward;
 
     //print w_dot_ref
-    std::cout << "w_dot_ref: " << w_dot_ref.transpose() << std::endl;
+    //std::cout << "w_dot_ref: " << w_dot_ref.transpose() << std::endl;
 
     float vel_u = velocity[0];
     float vel_v = velocity[1];
@@ -105,7 +105,7 @@ void AgileCascadedPID::update(
     Eigen::Vector3f delta_u = sensitivity * w_dot_ref;
 
     //print delta_u for debugging
-    std::cout << "delta_u: " << delta_u.transpose() << std::endl;
+    //std::cout << "delta_u: " << delta_u.transpose() << std::endl;
 
     actuator_outputs_[0] = clamp(thrust_ref_, -0.9f, 1.0f);
     actuator_outputs_[1] = clamp(u_sw_sym + delta_u[0],-1.0f, 0.5f); // left sweep)
