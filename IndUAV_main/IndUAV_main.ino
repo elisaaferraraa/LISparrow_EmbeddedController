@@ -140,58 +140,6 @@ void setup() {
 
 }
 
-void armingSequence() {
-  //[ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
-  mavlink_message_t msg;
-  mavlink_status_t  status;
-  while (Serial1.available()) {
-    uint8_t c = Serial1.read();
-    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
-      if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-        mavlink_heartbeat_t hb;
-        mavlink_msg_heartbeat_decode(&msg, &hb);
-        bool nowArmed = (hb.base_mode & MAV_MODE_FLAG_SAFETY_ARMED);
-        if (nowArmed != is_armed) {
-          is_armed = nowArmed;
-          Serial.println("Vehicle is now ARMED");
-          digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
-        }
-        else{ arm();}
-      }
-      Serial1.write(c); // forward raw MAVLink byte onto USB not to get stuck
-    }
-  }
-}
-bool read_arming_status(){
-  /*
-  Read the arming status from the flight controller.
-  The status is accessed by reading the MAVLink heartbeat message (base_mode).
-  [ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
-  */
-  mavlink_message_t arm_msg;
-  mavlink_status_t status;
-  bool armed = false;
-
-  while (Serial1.available() > 0) {
-    uint8_t c = Serial1.read();
-    Serial2.write(c);  // forward raw MAVLink byte onto USB
-    if (mavlink_parse_char(MAVLINK_COMM_0, c, &arm_msg, &status)) {
-      if (arm_msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-        mavlink_heartbeat_t heartbeat;
-        mavlink_msg_heartbeat_decode(&arm_msg, &heartbeat);
-        Serial.println("Heartbeat was read");
-        if (heartbeat.base_mode & MAV_MODE_FLAG_SAFETY_ARMED) {
-          // Vehicle is armed
-          armed = true;
-          Serial.println("Flight controller status was read: vehicle is armed");
-        }
-        Serial.printf("System status value: %u\n", heartbeat.system_status);
-        Serial.printf("Base mode value: %u\n", heartbeat.base_mode);
-      }
-    }
-  }
-  return armed;
-}
 
 // --------- Main Loop -------------
 
@@ -253,59 +201,29 @@ void loop() {
 
 }
 
-
-void sendSetModeOffboard() {
+// --------functions called in loop-----------------
+void armingSequence() {
+  //[ref. https://mavlink.io/en/messages/common.html#HEARTBEAT]
   mavlink_message_t msg;
-  uint8_t buf[MAVLINK_MAX_PACKET_LEN];  // IDs
-  uint8_t system_id = 1;     // your companion ID (ESP32)
-  uint8_t component_id = MAV_COMP_ID_ONBOARD_COMPUTER;
-  uint8_t target_system = 1;   // PX4 is usually system 1  // MAV_MODE_FLAG_CUSTOM_MODE_ENABLED = 0b10000000 = 128
-  uint8_t base_mode = 128;  // PX4 OFFBOARD mode = 6
-  uint32_t custom_mode = 6;  // Pack the message
-  mavlink_msg_set_mode_pack(
-    system_id,
-    component_id,
-    &msg,
-    target_system,
-    base_mode,
-    custom_mode
-  );  // Convert message to byte stream
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);  // Send over UART (e.g., Serial1)
-  Serial1.write(buf, len);
-  Serial.println("sendSetModeOffboard passed");
-};
-
-void sendSetModeManual() {
-  mavlink_message_t msg;
-  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-
-  uint8_t system_id = 1;        // ESP32 system id
-  uint8_t component_id = MAV_COMP_ID_ONBOARD_COMPUTER;
-  uint8_t target_system = 1;    // PX4 system id
-
-  // PX4 manual mode base_mode and custom_mode:
-  // base_mode = MAV_MODE_MANUAL_ARMED = 81 (0x51)
-  // If you want disarmed manual mode, use MAV_MODE_MANUAL_DISARMED = 64 (0x40)
-  // Use 0 for custom_mode for manual.
-
-  uint8_t base_mode = MAV_MODE_MANUAL_ARMED;  // Disarmed manual = 64, armed manual = 81
-  uint32_t custom_mode = 0;
-
-  mavlink_msg_set_mode_pack(
-    system_id,
-    component_id,
-    &msg,
-    target_system,
-    base_mode,
-    custom_mode
-  );
-
-  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-  Serial1.write(buf, len);
-  Serial.println("Sent SET_MODE MANUAL");
-};
-
-
+  mavlink_status_t  status;
+  while (Serial1.available()) {
+    uint8_t c = Serial1.read();
+    if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status)) {
+      if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+        mavlink_heartbeat_t hb;
+        mavlink_msg_heartbeat_decode(&msg, &hb);
+        bool nowArmed = (hb.base_mode & MAV_MODE_FLAG_SAFETY_ARMED);
+        if (nowArmed != is_armed) {
+          is_armed = nowArmed;
+          Serial.println("Vehicle is now ARMED");
+          digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
+        }
+        else{ arm();}
+      }
+      Serial1.write(c); // forward raw MAVLink byte onto USB not to get stuck
+    }
+  }
+}
 
 void arm(){
   mavlink_command_long_t cmd;
@@ -331,9 +249,6 @@ void arm(){
 }
 
 
-
-
-// --------functions called in loop-----------------
 bool read_MoCAP(float* data_out) {
   int packetSize = Udp.parsePacket();
   // Serial.printf("packetSize  mocap:  %f\n", packetSize) ;
