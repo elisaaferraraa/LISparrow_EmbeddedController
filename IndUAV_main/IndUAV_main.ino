@@ -152,21 +152,15 @@ void loop() {
   // 1) Read any incoming UDP packet (could be MoCap or ARM)
   int len = readUDPtoBuf();
   if (len > 0) {
-    // OPTIONAL: peek at mavlink header to decide MoCap vs ARM
     uint8_t hdr = udpBuf[0];
-    if (hdr == MAVLINK_V2_STX /*0xFD*/ || hdr == MAVLINK_STX /*0xFE*/) { … }
-
     // 2a) If it’s your ARM command, forward it:
-    send_Arming_to_Pixhawk(udpBuf, len);
-
-    // 2b) If it’s MoCap, you’d still call:
-        send_MoCAP_to_Pixhawk(reinterpret_cast<float*>(udpBuf));
+    if (hdr == MAVLINK_STX   /*0xFE*/ || hdr == 0xFD /*0xFD = MAVLink v2 start byte*/) {    
+        send_Arming_to_Pixhawk(udpBuf, len);}
+    // 2b) If it’s MoCap:
+    else{ 
+      send_MoCAP_to_Pixhawk(reinterpret_cast<float*>(udpBuf));    }
   }
 
-
-  // // 1. Read MoCap over UDP and send to Pixhawk
-  // if (read_MoCAP(mocap_data)) {
-  // send_MoCAP_to_Pixhawk(mocap_data);}
 
   // // 2. Always check for incoming MAVLink messages
   read_Pixhawk();
@@ -249,22 +243,13 @@ void send_Arming_to_Pixhawk(const uint8_t* buf, int len) {
   // Just mirror the exact MAVLink bytes onto Serial1
   Serial1.write(buf, len);
   Serial1.flush();
-  Serial.printf("→ Forwarded ARM packet (%d bytes) to Pixhawk\n", len);
+  Serial.printf("Forwarded ARM packet (%d bytes) to Pixhawk\n", len);
 }
 
-// bool read_MoCAP(float* data_out) {
-//   int packetSize = Udp.parsePacket();
-//   if (packetSize == 28) {
-//     Udp.read((char*)data_out, 28);
-//     return true;
-//   }
-//   return false;
-// }
 
 void send_MoCAP_to_Pixhawk(const float* data) {
   float posX = data[0], posY = data[1], posZ = data[2];
   float qx = data[3], qy = data[4], qz = data[5], qw = data[6];
-
   // Convert quaternion to roll, pitch, yaw  because PX4 expects these angles in VISION_POSITION_ESTIMATE
   float roll = atan2(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
   float pitch = asin(2.0f * (qw * qy - qz * qx));
@@ -282,14 +267,8 @@ void send_MoCAP_to_Pixhawk(const float* data) {
   );
 
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
-  // Serial.println("→ MAVLink VISION_POSITION_ESTIMATE sent");
-  // Debug printi
-  // Serial.println(" Sending MoCap → Pixhawk:");
-  // Serial.printf("  Position -probably- in NED (x, y, z): [%.3f, %.3f, %.3f]\n", posX, posY, posZ);
-  // Serial.printf("  Quaternion (x, y, z, w): [%.4f, %.4f, %.4f, %.4f]\n", qx, qy, qz, qw);ii
-  // Serial.printf("  RPY (rad): roll=%.3f, pitch=%.3f, yaw=%.3f\n", roll, pitch, yaw);
-  // Serial.printf("  Timestamp: %llu us\n", timestamp_us);
-} 
+  Serial1.write(buf, len);
+}
 
 
 void read_Pixhawk() {

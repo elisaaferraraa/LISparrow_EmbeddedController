@@ -13,8 +13,8 @@ mav = mavlink.MAVLink(None)
 # Example data
 def make_mocap_example():
     """Create a mock packet to simulate sending motion capture data."""
-    pos = (time.time(), 0.0, 0.0)  # position x,y,z
-    quat = (0.707, 0.0, 0.0, 0.707)  # quaternion x,y,z,w
+    pos = (0.0, 10.0, 10.0)  # position x,y,z
+    quat = (0.0, 0.0, 0.707, 0.707)  # quaternion x,y,z,w
     packet = struct.pack('<7f', *pos, *quat)  # Little endian, 7 floats
     return packet
 
@@ -40,7 +40,7 @@ def make_arm_packet(target_system=1, target_component=1, force_arm=True):
     return msg.pack(mav)
 
 if __name__ == "__main__":
-    arm_packet = make_arm_packet(force_arm=True)
+    arm_packet = make_arm_packet(force_arm=False)
     print(f"Sending ARM command to {UDP_IP}:{UDP_PORT}…")
     sock.sendto(arm_packet, (UDP_IP, UDP_PORT))
     print("→ ARM packet sent")
@@ -48,6 +48,4 @@ if __name__ == "__main__":
     while True:
         packet = make_mocap_example()
         sock.sendto(packet, (UDP_IP, UDP_PORT))
-        print("Sent packet:", packet)
-        print("Sending to:", (UDP_IP, UDP_PORT))
         time.sleep(1)  # 1 Hz
