@@ -46,6 +46,10 @@ const char* laptopIP = "192.168.194.114"; // <-- Your laptop IP on same network 
 const int laptopPort = 9999;          // <-- Choose an unused UDP port for feedback
 WiFiUDP laptopUdp;
 
+const char* ElisalaptopIP = "192.168.194.114";
+const int ElisalaptopPort = 9998; // <-- Choose an unused UDP port for feedback
+WiFiUDP ElisalaptopUdp;
+
 const int QGCport = 14550;          // <-- Choose an unused UDP port for feedback
 WiFiUDP QGC;
 
@@ -58,6 +62,7 @@ WiFiUDP QGC;
 
 
 // ====== Globals ======
+const int led = D10; 
 // MavLink
 mavlink_message_t msg;
 mavlink_attitude_quaternion_t att_q; //TODO eliminate thus
@@ -95,9 +100,11 @@ unsigned long last_update = 0;
 
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);  // Initialize LED pin as output
+  pinMode(led, OUTPUT);
+  // pinMode(LED_BUILTIN, OUTPUT);  // Initialize LED pin as output
   Serial.begin(115200);
-  digitalWrite(LED_BUILTIN, HIGH);  // LED OFF before WiFi is connected
+  //digitalWrite(LED_BUILTIN, HIGH);  // LED OFF before WiFi is connected
+  digitalWrite(led, HIGH);  // LED OFF before WiFi is connected
   
   WiFi.setSleep(WIFI_PS_NONE); //full battery
   initWiFi(); 
@@ -169,41 +176,13 @@ void loop() {
   // 4. Send RC override to Pixhawk
   send_MAVLink_SERVO(actuators);
   // 5. Debugging output to laptop (optional)
-  // laptop_debug(actuators);
-  laptop_debug_QGC();
+  laptop_debug(actuators);
+  //laptop_debug_QGC();
 
+  delay(10); //100 Hz
 }
 
 // --------functions called in loop-----------------
-void WiFiEvent(WiFiEvent_t event, arduino_event_info_t info) {
-
-  switch (event) {
-  
-  case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-  
-    Serial.println("");
-    Serial.println("Station connected");
-    break;
-  
-  case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-  
-    Serial.println("");
-    Serial.println("Got IP address: ");
-    Serial.println(WiFi.localIP());
-    break;
-  
-  case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-  
-    Serial.println("");
-    Serial.println("Disconnected from station, attempting reconnection");
-    WiFi.reconnect();
-    break;
-  
-  default:
-    break;
-  
-  }}
-
 void initWiFi(){
   //  WIFI SETUP
   //if wifi connection does not work try to shortcut the RST button (i.e. press it) to reset the ESP32
@@ -215,7 +194,8 @@ void initWiFi(){
     Serial.println(WiFi.status());
     delay(500);
   }
-  digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
+  //digitalWrite(LED_BUILTIN, LOW);  // LED ON when WiFi is connected
+  digitalWrite(led, LOW);  // LED ON when WiFi is connected
   Serial.println("\nWiFi connected");
 }
 
@@ -394,7 +374,7 @@ void send_MAVLink_SERVO(Eigen::VectorXf& actuators) {
 
   for (int i = 0; i < 5 && i < actuators.size(); ++i) {
     if (i==1) {  // left sweep inversion 
-      rc_override[i] = mapToPWM(-actuators[i]);
+      rc_override[i] = mapToPWM(-(actuators[i]+0.25f)-0.25f);
     } else {
       rc_override[i] = mapToPWM(actuators[i]);
     }
@@ -447,6 +427,10 @@ void laptop_debug(const Eigen::VectorXf& actuators) {
     actuators[4],
     0.0f  // Padding or future use
   };
+
+  ElisalaptopUdp.beginPacket(ElisalaptopIP, ElisalaptopPort);
+  ElisalaptopUdp.write((uint8_t*)packet, sizeof(packet));
+  ElisalaptopUdp.endPacket();
 
 }
 
@@ -501,7 +485,6 @@ void send_RC_channels_to_QGC(const float *rc_in_f, uint8_t chan_count, uint8_t r
 
 
 void send_servo_outputs_to_QGC(const uint16_t *servo_pwm, uint8_t servo_count) {
-  // Build a 16-element uint16_t array
   uint16_t pwm[16] = {0};
   for (uint8_t i = 0; i < servo_count && i < 16; i++) {
     pwm[i] = servo_pwm[i];
